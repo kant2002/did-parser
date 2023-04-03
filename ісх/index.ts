@@ -6,6 +6,10 @@ interface TokenTypeData {
     name: TOKEN_TYPE;
     pattern: RegExp;
 }
+interface FastTokenTypeData {
+    name: TOKEN_TYPE;
+    pattern: string;
+}
 
 type ВузелЗначення = ЧисловийВузел | ЛогічнийВузел | ПустийВузел | ТекстовийВузел
     | ОбʼектнийВузел | ВузелСписка | ВузелСловника;
@@ -179,17 +183,17 @@ export type DictionaryNode = ВузелСловника;
 export type DictionaryEntryNode = ВузелЗаписуСловника;
 
 const TOKEN_TYPES: TokenTypeData[] = [
-    { name: 'IDENTIFIER', pattern: /[a-zA-Zа-яА-ЯіҐʼ_][0-9a-zA-Zа-яА-ЯіҐʼ_]*/ },
-    { name: 'EQUALS', pattern: /=/ },
-    { name: 'STRING', pattern: /"[^"]*"/ },
-    { name: 'NUMBER', pattern: /-?\d+(\.\d+)?/ },
-    { name: 'LPAREN', pattern: /\(/ },
-    { name: 'RPAREN', pattern: /\)/ },
-    { name: 'LBRACKET', pattern: /\[/ },
-    { name: 'RBRACKET', pattern: /\]/ },
-    { name: 'COMMA', pattern: /,/ },
-    { name: 'NEWLINE', pattern: /(\n|\r\n|\r)/ },
-    { name: 'WHITESPACE', pattern: /\s+/ },
+    { name: 'IDENTIFIER', pattern: /^[a-zA-Zа-яА-ЯіІҐґЇїєЄʼ_][0-9a-zA-Zа-яА-ЯіІҐґЇїєЄʼ_]*/ },
+    { name: 'NUMBER', pattern: /^-?\d+(\.\d+)?/ },
+];
+
+const FAST_TOKEN_TYPES: FastTokenTypeData[] = [
+    { name: 'EQUALS', pattern: "=" },
+    { name: 'LPAREN', pattern: "(" },
+    { name: 'RPAREN', pattern: ")" },
+    { name: 'LBRACKET', pattern: "[" },
+    { name: 'RBRACKET', pattern: "]" },
+    { name: 'COMMA', pattern: "," },
 ];
 
 interface FilePosition {
@@ -230,23 +234,97 @@ export class Лексер {
             });
         }
 
+        const range = {
+            start: {
+                line: this.line,
+                column: this.column,
+            },
+            end: {
+                line: this.line,
+                column: this.column,
+            }
+        }
+
+        const value = this.inputString[this.position];
+        for (const tokenType of FAST_TOKEN_TYPES) {
+            if (value === tokenType.pattern) {
+                return this.produceToken(tokenType.name, value, range);
+            }
+        }
+
+        if (value === ' ' || value === '\t') {
+            return this.produceToken('WHITESPACE', value, range);
+        }
+
+        if (value === '\n' || value === '\r') {
+            this.line++;
+            range.end.column = 1;
+            range.end.line = this.line;
+            this.position += 1;
+            this.column = 1;
+            if (value === '\r') {
+                const value2 = this.peek();
+                if (value2 === '\n') {
+                    this.position += 1;
+                    return new Token('NEWLINE', value + value2, range);
+                }
+            }
+
+            return new Token('NEWLINE', value, range);
+        }
+
+        if (value === '"') {
+            this.position++;
+            this.column++;
+            let currentChar = this.peek();
+            let textContent = '';
+            while (currentChar !== '"') {
+                if (currentChar === '\\') {
+                    // proces escape character
+                    this.position++;
+                    const escapedChar = this.peek();
+                    switch (escapedChar) {
+                        case 't':
+                            textContent += '\t';
+                            this.column++;
+                            break;
+                        case 'r':
+                            textContent += '\r';
+                            this.column++;
+                            break;
+                        case 'n':
+                            textContent += '\n';
+                            this.column++;
+                            break;
+                        case '\\':
+                            textContent += '\\';
+                            this.column++;
+                            break;
+                        default:
+                            throw new Error(`Unexpected escape sequence \\${escapedChar}`);
+                    }
+                } else {
+                    textContent += currentChar;
+                }
+
+                this.position++;
+                this.column++;
+                currentChar = this.peek();
+            }
+
+            this.position++;
+            this.column++;
+            range.end.column = this.column;
+            return new Token('STRING', textContent, range);
+        }
+
         for (const tokenType of TOKEN_TYPES) {
-            const regex = new RegExp(`^${tokenType.pattern.source}`);
+            const regex = tokenType.pattern
             const match = this.inputString.slice(this.position).match(regex);
 
             if (match) {
                 const value = match[0];
-                const range = {
-                    start: {
-                        line: this.line,
-                        column: this.column,
-                    },
-                    end: {
-                        line: this.line,
-                        column: value.length,
-                    }
-                }
-
+                range.end.column += value.length;
                 const token = new Token(tokenType.name, value, range);
                 this.position += value.length;
                 this.column += value.length;
@@ -260,6 +338,33 @@ export class Лексер {
         }
 
         throw new Error(`Неочіковані дані на рядку: ${this.line} стовпець: ${this.column}: ${this.inputString.slice(this.position)}`);
+    }
+
+    peek() {
+        if (this.position < this.inputString.length) {
+            return this.inputString[this.position];
+        }
+
+        return "\0";
+    }
+
+    tryConsumeChar(char: string) {
+        const value2 = this.peek();
+        if (value2 === char) {
+            this.position += 1;
+            this.column += 1;
+            return true;
+        }
+
+        return false;
+    }
+
+    produceToken(tokenName: TOKEN_TYPE, value: string, range: FileRange) {
+        range.end.column += 1;
+        const token = new Token(tokenName, value, range);
+        this.position += 1;
+        this.column += 1;
+        return token;
     }
 }
 
@@ -324,7 +429,7 @@ export class Парсер {
                 propertyValue = this.parseBool();
                 if (this.поточнийТипТокену() === 'LPAREN') {
                     const елементи = this.parseObjectEntryNodes();
-                    propertyValue = new ОбʼектнийВузел(identifier, елементи);    
+                    propertyValue = new ОбʼектнийВузел(identifier, елементи);
                 }
             }
             else if (identifier === 'пусто') {
@@ -332,7 +437,7 @@ export class Парсер {
                 this.consume('IDENTIFIER');
                 if (this.поточнийТипТокену() === 'LPAREN') {
                     const елементи = this.parseObjectEntryNodes();
-                    propertyValue = new ОбʼектнийВузел(identifier, елементи);    
+                    propertyValue = new ОбʼектнийВузел(identifier, елементи);
                 }
             }
             else {
@@ -358,7 +463,7 @@ export class Парсер {
     }
 
     private parseTextNode() {
-        const propertyValue = new ТекстовийВузел(this.поточнийТокен.value.slice(1, -1));
+        const propertyValue = new ТекстовийВузел(this.поточнийТокен.value);
         this.consume(this.поточнийТокен.type);
         return propertyValue;
     }
