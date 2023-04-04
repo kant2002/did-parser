@@ -3,7 +3,7 @@
       "outDir": "./росп/",
       "noImplicitAny": true,
       "module": "CommonJS",
-      "target": "es5",
+      "target": "ES6",
       "allowJs": true,
       "esModuleInterop": true,
       "moduleResolution": "node"

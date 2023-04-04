@@ -183,8 +183,7 @@ export type DictionaryNode = ВузелСловника;
 export type DictionaryEntryNode = ВузелЗаписуСловника;
 
 const TOKEN_TYPES: TokenTypeData[] = [
-    { name: 'IDENTIFIER', pattern: /^[a-zA-Zа-яА-ЯіІҐґЇїєЄʼ_][0-9a-zA-Zа-яА-ЯіІҐґЇїєЄʼ_]*/ },
-    { name: 'NUMBER', pattern: /^-?\d+(\.\d+)?/ },
+    { name: 'IDENTIFIER', pattern: /^[a-zA-Zа-яА-ЯіІҐґЇїєЄ_][0-9a-zA-Zа-яА-ЯіІҐґЇїєЄʼ'_]*/ },
 ];
 
 const FAST_TOKEN_TYPES: FastTokenTypeData[] = [
@@ -195,6 +194,18 @@ const FAST_TOKEN_TYPES: FastTokenTypeData[] = [
     { name: 'RBRACKET', pattern: "]" },
     { name: 'COMMA', pattern: "," },
 ];
+
+function isNumber(char: string) {
+    return char >= "0" && char <= "9";
+}
+
+function isLetter(char: string) {
+    return (char >= "а" && char <= "я")
+        || (char >= "А" && char <= "Я")
+        || (char >= "a" && char <= "z")
+        || (char >= "A" && char <= "Z")
+        || "іІҐґЇїєЄ".indexOf(char) !== -1;
+}
 
 interface FilePosition {
     line: number;
@@ -274,50 +285,15 @@ export class Лексер {
         }
 
         if (value === '"') {
-            this.position++;
-            this.column++;
-            let currentChar = this.peek();
-            let textContent = '';
-            while (currentChar !== '"') {
-                if (currentChar === '\\') {
-                    // proces escape character
-                    this.position++;
-                    const escapedChar = this.peek();
-                    switch (escapedChar) {
-                        case 't':
-                            textContent += '\t';
-                            this.column++;
-                            break;
-                        case 'r':
-                            textContent += '\r';
-                            this.column++;
-                            break;
-                        case 'n':
-                            textContent += '\n';
-                            this.column++;
-                            break;
-                        case '\\':
-                            textContent += '\\';
-                            this.column++;
-                            break;
-                        default:
-                            throw new Error(`Unexpected escape sequence \\${escapedChar}`);
-                    }
-                } else {
-                    textContent += currentChar;
-                }
-
-                this.position++;
-                this.column++;
-                currentChar = this.peek();
-            }
-
-            this.position++;
-            this.column++;
-            range.end.column = this.column;
-            return new Token('STRING', textContent, range);
+            return this.consumeStringToken(value, range);
         }
 
+        if (value === '-' || isNumber(value)) {
+            return this.consumeNumber(value, range);
+        }
+
+        // This is still faster then manually processing symbols.
+        // looks like more complex regular expressions beneficial to parsing
         for (const tokenType of TOKEN_TYPES) {
             const regex = tokenType.pattern
             const match = this.inputString.slice(this.position).match(regex);
@@ -328,16 +304,98 @@ export class Лексер {
                 const token = new Token(tokenType.name, value, range);
                 this.position += value.length;
                 this.column += value.length;
-                if (tokenType.name == "NEWLINE") {
-                    this.line++;
-                    this.column = 1;
-                }
-
                 return token;
             }
         }
 
         throw new Error(`Неочіковані дані на рядку: ${this.line} стовпець: ${this.column}: ${this.inputString.slice(this.position)}`);
+    }
+
+    private consumeStringToken(value: string, range: FileRange) {
+        this.position++;
+        this.column++;
+        let currentChar = this.peek();
+        let textContent = '';
+        while (currentChar !== '"') {
+            if (currentChar === '\\') {
+                // proces escape character
+                this.position++;
+                this.column++;
+                const escapedChar = this.peek();
+                switch (escapedChar) {
+                    case 't':
+                        textContent += '\t';
+                        break;
+                    case 'r':
+                        textContent += '\r';
+                        break;
+                    case 'n':
+                        textContent += '\n';
+                        break;
+                    case '"':
+                        textContent += '\"';
+                        break;
+                    case '\\':
+                        textContent += '\\';
+                        break;
+                    case '0':
+                        textContent += '\0';
+                        break;
+                    case 'b':
+                        textContent += '\b';
+                        break;
+                    case 'f':
+                        textContent += '\f';
+                        break;
+                    case '\'':
+                        textContent += '\'';
+                        break;
+                    default:
+                        throw new Error(`Unexpected escape sequence \\${escapedChar}`);
+                }
+            } else {
+                textContent += currentChar;
+            }
+
+            this.position++;
+            this.column++;
+            currentChar = this.peek();
+        }
+
+        this.position++;
+        this.column++;
+        range.end.column = this.column;
+        return new Token('STRING', textContent, range);
+    }
+
+    private consumeNumber(value: string, range: FileRange) {
+        let numberContent = value;
+        let digitRequired = value === '-';
+        let dotAllowed = true;
+        this.position++;
+        this.column++;
+        let currentChar = this.peek();
+        while (isNumber(currentChar) || currentChar === '.') {
+            if (currentChar === '.') {
+                if (dotAllowed) {
+                    dotAllowed = false;
+                } else {
+                    throw new Error(`У числі не повинно бути двох точок`);
+                }
+            }
+
+            numberContent += currentChar;
+            digitRequired = false;
+            this.position++;
+            this.column++;
+            currentChar = this.peek();
+        }
+
+        if (digitRequired) {
+            throw new Error(`На рядку ${this.line} та стовпчику ${this.column} очікувалася цифра, замість того ${currentChar}`);
+        }
+        range.end.column = this.column;
+        return new Token('NUMBER', numberContent, range);
     }
 
     peek() {
@@ -489,7 +547,7 @@ export class Парсер {
             if (this.поточнийТокен.type === 'COMMA') {
                 this.consume('COMMA');
             } else if (this.поточнийТипТокену() !== 'RPAREN') {
-                throw new Error(`Очікувалася кома. На рядку ${this.поточнийТокен.range.start.line} стовпець ${this.поточнийТокен.range.start.column} знаходиься '${this.поточнийТокен.value}'`);
+                throw new Error(`Очікувалася кома. Замість цього на рядку ${this.поточнийТокен.range.start.line} стовпець ${this.поточнийТокен.range.start.column} знаходиься '${this.поточнийТокен.value}'`);
             }
         }
 
@@ -507,7 +565,7 @@ export class Парсер {
             if (this.поточнийТокен.type === 'COMMA') {
                 this.consume('COMMA');
             } else if (this.поточнийТипТокену() !== 'RBRACKET') {
-                throw new Error(`Очікувалася кома. На рядку ${this.поточнийТокен.range.start.line} стовпець ${this.поточнийТокен.range.start.column} знаходиься '${this.поточнийТокен.value}'`);
+                throw new Error(`Очікувалася кома. Замість цього на рядку ${this.поточнийТокен.range.start.line} стовпець ${this.поточнийТокен.range.start.column} знаходиься '${this.поточнийТокен.value}'`);
             }
         }
 
@@ -540,7 +598,7 @@ export class Парсер {
             if (this.поточнийТипТокену() === 'COMMA') {
                 this.consume('COMMA');
             } else if (this.поточнийТипТокену() !== 'RPAREN') {
-                throw new Error(`Очікувалася кома. На рядку ${this.поточнийТокен.range.start.line} стовпець ${this.поточнийТокен.range.start.column} знаходиься '${this.поточнийТокен.value}'`);
+                throw new Error(`Очікувалася кома. Замість цього на рядку ${this.поточнийТокен.range.start.line} стовпець ${this.поточнийТокен.range.start.column} знаходиься '${this.поточнийТокен.value}'`);
             }
         }
 
